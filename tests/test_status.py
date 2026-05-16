@@ -136,14 +136,23 @@ def test_short_render_still_emits_log_tails_if_collected(project_dir: Path):
 
 
 def test_collect_log_tails_calls_docker_logs(project_dir: Path):
-    """The actual `docker logs --tail N <name>` invocation produces the
-    list[str] for each agent. Exercise this path directly so the
-    higher-level tests can stay narrow."""
-    agents = [{"name": "agent-factory-x-1", "uptime": "2 minutes ago"}]
-    fake = type("X", (), {"stdout": "line1\nline2\n", "stderr": ""})()
-    with patch("agent_factory.status.subprocess.run", return_value=fake) as srun:
+    """_collect_log_tails delegates to docker_runner.read_container_logs
+    and parses its combined stdout+stderr into a list. The helper does
+    its own subprocess invocation; we just verify the contract here."""
+    agents = [
+        {"name": "agent-factory-x-1", "uptime": "2 minutes ago"},
+        {"name": "agent-factory-x-2", "uptime": "1 minute ago"},
+    ]
+
+    def fake_read(name: str, tail: int) -> str:
+        assert tail == 7
+        return f"{name}-line1\n{name}-line2\n"
+
+    with patch("agent_factory.status.read_container_logs", side_effect=fake_read) as rcl:
         result = status_mod._collect_log_tails(agents, 7)
-    assert result == {"agent-factory-x-1": ["line1", "line2"]}
-    invoked_cmd = srun.call_args.args[0]
-    assert invoked_cmd[:4] == ["docker", "logs", "--tail", "7"]
-    assert invoked_cmd[-1] == "agent-factory-x-1"
+    assert result == {
+        "agent-factory-x-1": ["agent-factory-x-1-line1", "agent-factory-x-1-line2"],
+        "agent-factory-x-2": ["agent-factory-x-2-line1", "agent-factory-x-2-line2"],
+    }
+    # Both agents queried (parallelism is the whole point of the rewrite).
+    assert rcl.call_count == 2

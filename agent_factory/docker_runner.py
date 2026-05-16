@@ -136,10 +136,29 @@ def list_running(layout: ProjectLayout) -> list[str]:
 
 
 def remove_existing(layout: ProjectLayout) -> None:
-    """Force-remove any leftover containers from a previous run."""
-    for i in range(1, 65):
-        name = f"{layout.run_prefix}-{i}"
-        _run_docker(["rm", "-f", name])
+    """Force-remove any leftover containers from a previous run.
+
+    Lists containers (running OR exited) matching the project prefix in
+    a single `docker ps -a` call, then nukes them in one batched
+    `docker rm -f`. The old loop did 64 sequential subprocess calls
+    even when most names didn't exist - seconds of waste on cold start.
+    """
+    result = _run_docker(
+        [
+            "ps",
+            "-a",
+            "--filter",
+            f"name={layout.run_prefix}",
+            "--format",
+            "{{.Names}}",
+        ]
+    )
+    if result is None or result.returncode != 0:
+        return
+    names = [line for line in result.stdout.splitlines() if line.strip()]
+    if not names:
+        return
+    _run_docker(["rm", "-f", *names])
 
 
 def launch_agents(
@@ -276,3 +295,18 @@ def exec_in_container(container: str, *cmd: str) -> str:
     if result is None:
         return ""
     return result.stdout
+
+
+def read_container_logs(container: str, tail: int) -> str:
+    """Return the last N lines of a container's combined stdout+stderr.
+
+    Shared by `status._collect_log_tails` and `logs._snapshot`. Both
+    callers need exactly this: invoke `docker logs --tail N <container>`
+    and get a single merged string. Stderr is merged in because
+    `docker logs` writes container-stderr to its own stderr by default;
+    a forensics viewer wants everything.
+    """
+    result = _run_docker(["logs", "--tail", str(tail), container])
+    if result is None:
+        return ""
+    return (result.stdout or "") + (result.stderr or "")

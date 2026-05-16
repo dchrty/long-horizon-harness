@@ -14,6 +14,7 @@ import logging
 import subprocess
 import tempfile
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from agent_factory.config import ProjectLayout
 from agent_factory.docker_runner import (
     container_status,
     exec_in_container,
+    read_container_logs,
 )
 from agent_factory.repo import clone_snapshot
 
@@ -93,22 +95,21 @@ def snapshot(
 
 
 def _collect_log_tails(agents: list[dict[str, str]], lines: int) -> dict[str, list[str]]:
-    """Run `docker logs --tail N` for each agent. Best-effort: missing
-    or transiently-failing containers map to an empty list."""
+    """Run `docker logs --tail N` for each agent in parallel.
+
+    Best-effort: missing or transiently-failing containers map to an
+    empty list. Parallelism matters because `status --debug` collects
+    tails for every running agent on every snapshot; sequential
+    fetches make the debug status block scale linearly with agent
+    count for no good reason."""
+    if not agents:
+        return {}
+    names = [a["name"] for a in agents]
     out: dict[str, list[str]] = {}
-    for agent in agents:
-        name = agent["name"]
-        log.debug("docker logs --tail %d %s", lines, name)
-        result = subprocess.run(
-            ["docker", "logs", "--tail", str(lines), name],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        # docker logs writes container-stdout to its stdout and
-        # container-stderr to its stderr; merge so we don't lose either.
-        combined = (result.stdout or "") + (result.stderr or "")
-        out[name] = [ln for ln in combined.splitlines() if ln.strip()]
+    with ThreadPoolExecutor(max_workers=len(names)) as pool:
+        tails = pool.map(lambda n: read_container_logs(n, lines), names)
+        for name, combined in zip(names, tails, strict=True):
+            out[name] = [ln for ln in combined.splitlines() if ln.strip()]
     return out
 
 

@@ -23,7 +23,7 @@ import time
 import click
 
 from agent_factory.config import ProjectLayout
-from agent_factory.docker_runner import list_running
+from agent_factory.docker_runner import list_running, read_container_logs
 
 log = logging.getLogger(__name__)
 
@@ -116,16 +116,7 @@ def _snapshot(agents: list[str], tail: int) -> None:
     """Read last N lines from each agent serially."""
     for idx, agent in enumerate(agents):
         color = _color_for(idx)
-        log.debug("docker logs --tail %d %s", tail, agent)
-        proc = subprocess.run(
-            ["docker", "logs", "--tail", str(tail), agent],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        # `docker logs` writes container stdout to its stdout and stderr to
-        # its stderr by default. Merge so we see everything in order.
-        combined = (proc.stdout or "") + (proc.stderr or "")
+        combined = read_container_logs(agent, tail)
         if not combined.strip():
             _write(agent, color, "(no output yet)")
             continue
