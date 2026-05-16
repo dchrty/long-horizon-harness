@@ -73,6 +73,18 @@ def init_upstream(layout: ProjectLayout) -> None:
         text=True,
     )
 
+    # If the project opts into judgement (has JUDGE.md), seed the
+    # pre-receive hook into the bare repo's hooks/ directory. The hook
+    # runs on every push and rejects commits that touch paths listed in
+    # .judge-gates without a passing judge verdict.
+    #
+    # Hook is NOT version-controlled — it lives in upstream.git/hooks/
+    # only, not in any working tree. Agents that clone the bare repo
+    # don't see it in their checkouts; they only experience it as
+    # "my push was rejected" if their commit fails the gate.
+    if layout.judge_md is not None:
+        _seed_pre_receive_hook(layout.upstream_repo)
+
     with tempfile.TemporaryDirectory(prefix="agent-factory-seed-") as tmp:
         work = Path(tmp) / "seed"
         log.debug("git clone %s %s", layout.upstream_repo, work)
@@ -158,3 +170,22 @@ def clone_snapshot(layout: ProjectLayout, dest: Path) -> None:
         capture_output=True,
         text=True,
     )
+
+
+def _seed_pre_receive_hook(upstream_repo: Path) -> None:
+    """Write the pre-receive hook script into the bare repo's hooks dir.
+
+    Bare repos look for hooks at <repo>/hooks/<name>. The hook is NOT
+    a git-tracked file; it lives in the filesystem of the bare repo
+    only, runs on every push to that repo, and can reject pushes by
+    exiting non-zero.
+
+    Uses write_bytes to preserve LF on Windows (same CRLF-trap class
+    as the entrypoint.sh + judge.sh cases).
+    """
+    hooks_dir = upstream_repo / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook_path = hooks_dir / "pre-receive"
+    hook_path.write_bytes(_read_template("pre-receive").encode("utf-8"))
+    hook_path.chmod(0o755)
+    log.info("Seeded pre-receive judge hook into %s", hook_path)

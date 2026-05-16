@@ -1,0 +1,202 @@
+#!/bin/bash
+# =============================================================================
+# pre-receive — judge-gated acceptance of pushed commits
+# =============================================================================
+# Runs inside the bare upstream.git on every push. For each ref being
+# pushed, checks whether the incoming commits touch any "gated" path
+# (paths listed in `.judge-gates` at the pushed commit's root). If they
+# do, extracts the pushed commit into a temp working tree and invokes
+# `./judge.sh` against it. Exits non-zero -> push rejected.
+#
+# Gating opt-in:
+#   - The project must commit a `.judge-gates` file listing glob patterns
+#     for paths that require judge approval. One pattern per line; `#`
+#     comments and blank lines ignored.
+#   - The project must commit a `JUDGE.md` (the judge's criteria) and
+#     `judge.sh` (the script the hook invokes). Both are seeded by the
+#     harness when JUDGE.md is present at `agent-factory init` time.
+#   - Without `.judge-gates` OR without `JUDGE.md`, the hook accepts
+#     every push (no gating).
+#
+# Failure modes:
+#   - Judge verdict == "fail"  -> reject (exit 1). The push is rolled
+#     back; the agent must amend the commit and push again.
+#   - Judge can't be invoked (claude CLI missing, timeout, etc.) -> log
+#     and ACCEPT. Fail-open on infra errors so a broken claude doesn't
+#     brick every push for the whole run. The agent can still detect
+#     ungated commits via `agent-factory judges`.
+#
+# Agent summary: pre-receive uses the commit message itself as the
+# `JUDGE_INPUT_FILE` agent summary. GOAL.md already requires detailed
+# commit messages (spec citation, count delta, test results); the hook
+# just reuses them. No separate summary file needed.
+#
+# This script runs in the SAME environment as the agent container that
+# pushed (the bare repo is bind-mounted from the host, but git invokes
+# hooks in the process that did the push). $AGENT_ID, claude CLI, and
+# python3 are all available.
+# =============================================================================
+
+set -e
+
+ZERO_SHA="0000000000000000000000000000000000000000"
+
+# Read all (old, new, ref) lines stdin gives us. The pre-receive hook
+# receives one line per ref in the push.
+push_lines=$(cat)
+
+if [ -z "$push_lines" ]; then
+    # Nothing to evaluate.
+    exit 0
+fi
+
+# Iterate the pushed refs. For each, check whether ANY commit in the
+# pushed range touches a gated path; if so, judge the tip.
+while IFS=' ' read -r old_sha new_sha ref; do
+    # Branch deletion (new is all zeros): nothing to judge.
+    if [ "$new_sha" = "$ZERO_SHA" ]; then
+        continue
+    fi
+
+    # Determine the diff range. New branch creation (old is all zeros)
+    # means we compare against the empty tree.
+    if [ "$old_sha" = "$ZERO_SHA" ]; then
+        files=$(git diff-tree --no-commit-id --name-only -r "$new_sha" 2>/dev/null)
+    else
+        files=$(git diff --name-only "$old_sha..$new_sha" 2>/dev/null)
+    fi
+
+    # Pull .judge-gates from the pushed commit. If the file isn't in
+    # the commit, the project hasn't opted into gating; accept.
+    gates=$(git show "$new_sha:.judge-gates" 2>/dev/null || true)
+    if [ -z "$gates" ]; then
+        continue
+    fi
+
+    # Check the changed files against the gate patterns. First match wins.
+    matched_file=""
+    matched_pattern=""
+    while IFS= read -r raw_pattern; do
+        pattern=$(echo "$raw_pattern" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        [ -z "$pattern" ] && continue
+        case "$pattern" in \#*) continue ;; esac
+
+        while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            # Shell glob match via case statement. Patterns like
+            # `mfx/extract/*.py` work; anchored prefix matches work
+            # via exact-string equality.
+            case "$f" in
+                $pattern)
+                    matched_file="$f"
+                    matched_pattern="$pattern"
+                    break 2
+                    ;;
+            esac
+        done <<< "$files"
+    done <<< "$gates"
+
+    if [ -z "$matched_file" ]; then
+        # No gated paths touched in this push.
+        continue
+    fi
+
+    echo "[pre-receive] $ref: '$matched_file' matched gate '$matched_pattern'; invoking judge..." >&2
+
+    # Make sure the judge actually exists in the pushed commit.
+    if ! git cat-file -e "$new_sha:JUDGE.md" 2>/dev/null; then
+        echo "[pre-receive] no JUDGE.md in pushed commit; accepting (no gate possible)." >&2
+        continue
+    fi
+    if ! git cat-file -e "$new_sha:judge.sh" 2>/dev/null; then
+        echo "[pre-receive] no judge.sh in pushed commit; accepting (no gate possible)." >&2
+        continue
+    fi
+
+    # Extract the pushed commit into a temp working tree. judge.sh
+    # expects to run inside a real checkout (it does `cat JUDGE.md`,
+    # `git show $HASH`, etc).
+    workdir=$(mktemp -d -t pre-receive-judge.XXXXXX)
+    # shellcheck disable=SC2064
+    trap "rm -rf $workdir" EXIT
+
+    # `git clone` from the bare repo we're running inside ($GIT_DIR
+    # is set by git when invoking the hook).
+    if ! git clone --quiet "$GIT_DIR" "$workdir" 2>/dev/null; then
+        echo "[pre-receive] failed to clone bare repo for judging; ACCEPTING (fail-open)." >&2
+        continue
+    fi
+
+    if ! ( cd "$workdir" && git checkout --quiet "$new_sha" ); then
+        echo "[pre-receive] failed to checkout $new_sha; ACCEPTING (fail-open)." >&2
+        continue
+    fi
+
+    # Write the commit message as the agent's summary. GOAL.md already
+    # mandates spec citations + count deltas + test results in the
+    # message; reusing it keeps the agent's procedure unchanged.
+    summary_file="$workdir/.judge-summary"
+    git log -1 --pretty=%B "$new_sha" > "$summary_file"
+    verdict_file=$(mktemp -t verdict.XXXXXX)
+
+    # Build JUDGE_CONTEXT from the actually-changed files plus a couple
+    # of project-relative paths the judge typically wants.
+    context_lines=$(echo "$files" | head -20)
+    if git cat-file -e "$new_sha:RULES_LOG.md" 2>/dev/null; then
+        context_lines="$context_lines"$'\n'"RULES_LOG.md"
+    fi
+
+    # Invoke judge.sh inside the checkout. JUDGE_GIT_HASH is the commit
+    # being judged; the rest follows the judge.sh contract.
+    cd "$workdir"
+    set +e
+    JUDGE_GIT_HASH="$new_sha" \
+    JUDGE_INPUT_FILE="$summary_file" \
+    JUDGE_OUTPUT_FILE="$verdict_file" \
+    JUDGE_CONTEXT="$context_lines" \
+        ./judge.sh
+    judge_exit=$?
+    set -e
+
+    # Extract the verdict for the rejection message. Fall back to
+    # exit code semantics if the JSON is malformed or missing.
+    verdict_value=""
+    rationale_value=""
+    if [ -f "$verdict_file" ]; then
+        verdict_value=$(python3 -c "import json; print(json.load(open('$verdict_file')).get('verdict',''))" 2>/dev/null || echo "")
+        rationale_value=$(python3 -c "import json; print(json.load(open('$verdict_file')).get('rationale',''))" 2>/dev/null || echo "")
+    fi
+
+    if [ "$judge_exit" -eq 0 ] && [ "$verdict_value" = "pass" ]; then
+        echo "[pre-receive] judge PASS for $new_sha (commit accepted)." >&2
+        continue
+    fi
+
+    if [ "$judge_exit" -eq 2 ]; then
+        # Infra error (claude unavailable, parse failure, etc.) — fail-open
+        # so a broken judge doesn't brick every push.
+        echo "[pre-receive] judge infra error (exit 2); ACCEPTING (fail-open)." >&2
+        continue
+    fi
+
+    # Real fail verdict — reject the push.
+    echo "" >&2
+    echo "================================================================" >&2
+    echo "  push REJECTED by pre-receive judge gate" >&2
+    echo "================================================================" >&2
+    echo "  commit:    $new_sha" >&2
+    echo "  ref:       $ref" >&2
+    echo "  triggered: $matched_file matched gate '$matched_pattern'" >&2
+    echo "  verdict:   ${verdict_value:-fail}" >&2
+    if [ -n "$rationale_value" ]; then
+        echo "" >&2
+        echo "  rationale:" >&2
+        echo "$rationale_value" | sed 's/^/    /' >&2
+    fi
+    echo "" >&2
+    echo "  fix the commit (amend or revert + new) and push again." >&2
+    echo "================================================================" >&2
+    exit 1
+done <<< "$push_lines"
+
+exit 0

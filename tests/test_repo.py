@@ -57,6 +57,47 @@ def test_init_upstream_seeds_judge_artifacts_when_judge_md_present(project_dir: 
     assert data == {"version": 1, "verdicts": []}
 
 
+def test_init_upstream_seeds_pre_receive_hook_when_judge_md_present(project_dir: Path):
+    """When the project opts into judgement, the bare upstream.git
+    gets a pre-receive hook installed in its hooks/ dir. Pushes that
+    touch gated paths without a passing judge get rejected.
+
+    The hook is NOT a git-tracked file - it lives in the bare repo's
+    filesystem only. Agents cloning the repo don't see it; they only
+    experience it as a push rejection."""
+    (project_dir / "JUDGE.md").write_text("# judge\n")
+    layout = config.discover(project_dir)
+    repo.init_upstream(layout)
+
+    hook_path = layout.upstream_repo / "hooks" / "pre-receive"
+    assert hook_path.is_file(), "pre-receive hook was not seeded"
+
+    # Must be LF-clean. We've been bitten by Windows CRLF twice this
+    # session - shebang \r makes the kernel fail with the misleading
+    # "no such file or directory" error.
+    data = hook_path.read_bytes()
+    assert b"\r\n" not in data, "pre-receive hook has CRLF endings"
+    assert b"\r" not in data, "pre-receive hook has stray CR bytes"
+
+    # Must be executable. Skip the mode check on Windows where chmod is
+    # a no-op; the seeding code calls .chmod(0o755) anyway and that's
+    # the contract.
+    import os as _os
+    if _os.name == "posix":
+        assert hook_path.stat().st_mode & 0o111, "pre-receive hook is not executable"
+
+
+def test_init_upstream_skips_pre_receive_hook_when_no_judge_md(project_dir: Path):
+    """Projects that didn't opt into judgement (no JUDGE.md) get no
+    pre-receive hook - the whole gating machinery is off."""
+    # Deliberately do NOT create JUDGE.md.
+    layout = config.discover(project_dir)
+    repo.init_upstream(layout)
+
+    hook_path = layout.upstream_repo / "hooks" / "pre-receive"
+    assert not hook_path.exists(), "pre-receive hook should not be seeded without JUDGE.md"
+
+
 def test_init_upstream_seeds_judge_sh_with_lf_line_endings(project_dir: Path):
     """Agent containers must see LF-terminated judge.sh. A shebang with
     a trailing CR makes Linux fail with `exec ./judge.sh: no such file
