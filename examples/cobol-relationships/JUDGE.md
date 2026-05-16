@@ -18,7 +18,7 @@ of the prompt assembled by `judge.sh`.
 
 ### 1. Overfitting to the example corpus
 
-The corpus at `examples/sample_cobol/` is a small, narrow sample. It is
+The corpus at `corpus/sample_cobol/` is a small, narrow sample. It is
 **not** the source of truth for "this code works." A change is overfit
 if any of these are true:
 

@@ -1,9 +1,11 @@
 """Bare upstream git repo: create, seed, clone helpers.
 
 The "upstream" is a bare repo on the host that every agent container
-mounts and pushes into. The harness initialises it once with the user's
-GOAL.md (plus JUDGE.md, judge.sh, verdicts.json scaffold, and seed/
-contents if present).
+mounts and pushes into. The harness initialises it once by snapshotting
+the user's project directory: everything in it is committed, except a
+small skip list of harness state and common dev clutter. judge.sh and
+an empty verdicts.json are added on top if the project includes a
+JUDGE.md.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import tempfile
 from importlib import resources
 from pathlib import Path
 
-from agent_factory.config import ProjectLayout
+from agent_factory.config import SEED_SKIP_TOP_LEVEL, ProjectLayout
 
 log = logging.getLogger(__name__)
 
@@ -97,38 +99,47 @@ def init_upstream(layout: ProjectLayout) -> None:
 
 
 def _seed_files(work: Path, layout: ProjectLayout) -> None:
-    """Lay down GOAL.md, JUDGE.md (if any), judge.sh, verdicts.json, seed/."""
-    # GOAL.md — always present
-    shutil.copy2(layout.goal_md, work / "GOAL.md")
-    log.info("Seeded GOAL.md")
+    """Snapshot the project directory into `work`, then add harness files.
+
+    Everything in the project root is copied except entries in
+    `SEED_SKIP_TOP_LEVEL` (the harness's own state and common dev
+    clutter like `.git`, `.venv`, `__pycache__`, `node_modules`, ...).
+    On top, the harness lays down `current_tasks/` and — if `JUDGE.md`
+    exists in the project — `judge.sh` and a verdicts.json scaffold.
+    """
+    copied = 0
+    for child in layout.root.iterdir():
+        if child.name in SEED_SKIP_TOP_LEVEL:
+            continue
+        target = work / child.name
+        if child.is_dir():
+            shutil.copytree(child, target, dirs_exist_ok=False)
+        else:
+            shutil.copy2(child, target)
+        copied += 1
+    log.info("Seeded %d top-level entries from %s", copied, layout.root)
+
+    if not (work / "GOAL.md").is_file():
+        # discover() already enforced this, but guard against skip-list
+        # misconfiguration that would silently strip GOAL.md.
+        raise GitError("GOAL.md was not copied into the seed — check SEED_SKIP_TOP_LEVEL.")
 
     # current_tasks/ — convention for agent coordination (cleared each run)
-    (work / "current_tasks").mkdir()
-    (work / "current_tasks" / ".gitkeep").touch()
+    tasks_dir = work / "current_tasks"
+    tasks_dir.mkdir(exist_ok=True)
+    (tasks_dir / ".gitkeep").touch(exist_ok=True)
 
-    # JUDGE.md + judge.sh + verdicts.json — only if user opted into judging
+    # judge.sh + verdicts.json — only if the project opted into judging
     if layout.judge_md is not None:
-        shutil.copy2(layout.judge_md, work / "JUDGE.md")
-        log.info("Seeded JUDGE.md")
-
         judge_sh = work / "judge.sh"
         judge_sh.write_text(_read_template("judge.sh"))
         judge_sh.chmod(0o755)
         log.info("Seeded judge.sh from template")
 
         verdicts_path = work / "verdicts.json"
-        verdicts_path.write_text(_read_template("verdicts.empty.json"))
-        log.info("Seeded verdicts.json scaffold")
-
-    # seed/ — user-supplied initial files
-    if layout.seed_dir is not None:
-        for child in layout.seed_dir.iterdir():
-            target = work / child.name
-            if child.is_dir():
-                shutil.copytree(child, target, dirs_exist_ok=False)
-            else:
-                shutil.copy2(child, target)
-        log.info("Seeded %d items from seed/", len(list(layout.seed_dir.iterdir())))
+        if not verdicts_path.exists():
+            verdicts_path.write_text(_read_template("verdicts.empty.json"))
+            log.info("Seeded verdicts.json scaffold")
 
 
 def clone_snapshot(layout: ProjectLayout, dest: Path) -> None:

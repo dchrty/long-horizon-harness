@@ -62,8 +62,6 @@ def init(project_dir: Path | None, verbose: bool) -> None:
     click.echo(f"GOAL.md     : {layout.goal_md}")
     if layout.judge_md:
         click.echo(f"JUDGE.md    : {layout.judge_md} (judgement gating enabled)")
-    if layout.seed_dir:
-        click.echo(f"seed/       : {layout.seed_dir}")
     repo.init_upstream(layout)
     click.echo(f"Initialised: {layout.upstream_repo}")
 

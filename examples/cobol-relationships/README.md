@@ -10,7 +10,7 @@ parser changes.
 
 ## Example corpus
 
-`examples/sample_cobol/` contains a small set of COBOL files:
+`corpus/sample_cobol/` contains a small set of COBOL files:
 
 - `PROGA.cbl` → CALLs PROGB, COPYs FOO
 - `PROGB.cbl` → CALLs PROGC, COPYs BAR

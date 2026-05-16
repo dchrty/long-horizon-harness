@@ -18,10 +18,10 @@ Pure Python. No deps beyond pytest. To check yourself:
 
 ```bash
 python3 -m pytest -q
-python3 -m cobol_rels examples/sample_cobol > /tmp/graph.json   # smoke test
+python3 -m cobol_rels corpus/sample_cobol > /tmp/graph.json   # smoke test
 ```
 
-The example corpus lives at `examples/sample_cobol/`. Use it for
+The example corpus lives at `corpus/sample_cobol/`. Use it for
 manual sanity checks. **Do not** treat it as the test oracle — it is a
 small, narrow sample. See `JUDGE.md`.
 
@@ -66,7 +66,7 @@ changes, or test-suite-only additions.
    - **Why you think this is right**: justification
    - **Risk you're uncertain about**: assumptions you didn't fully verify
 3. Identify repo paths that bear on the change. Typical includes:
-   - The example corpus (`examples/sample_cobol/`) so the judge can
+   - The example corpus (`corpus/sample_cobol/`) so the judge can
      check for overfitting.
    - The files you modified.
    - Any spec docs you cited.
@@ -76,7 +76,7 @@ changes, or test-suite-only additions.
    JUDGE_GIT_HASH=$(git rev-parse HEAD) \
    JUDGE_INPUT_FILE=/tmp/agent_summary_$(git rev-parse --short HEAD).md \
    JUDGE_OUTPUT_FILE=/tmp/verdict_$(git rev-parse --short HEAD).json \
-   JUDGE_CONTEXT=$'examples/sample_cobol/\nsrc/cobol_rels/<file_you_changed>.py' \
+   JUDGE_CONTEXT=$'corpus/sample_cobol/\nsrc/cobol_rels/<file_you_changed>.py' \
      ./judge.sh
    ```
 
@@ -116,7 +116,7 @@ institutional memory — your predecessors learned things the hard way.
   the prompt if you have a good reason).
 - `verdicts.json` — past failures. Read at session start.
 - `current_tasks/` — work claim locks.
-- `examples/sample_cobol/` — small example corpus. Useful for sanity
+- `corpus/sample_cobol/` — small example corpus. Useful for sanity
   but biased; do not overfit.
 
 ## Rules

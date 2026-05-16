@@ -1,8 +1,10 @@
 """Project layout discovery.
 
-A "project" is a directory the user owns. It contains, at minimum, a
-GOAL.md. It may also contain a JUDGE.md (Goal 3) and a seed/ subdirectory
-whose contents are copied into the initial commit of upstream.git.
+A "project" is a directory the user owns. It must contain a GOAL.md.
+It may also contain a JUDGE.md (enables judgement gating). Everything
+else in the directory IS the initial state of the agents' shared repo
+— there is no separate "seed" concept. A small skip list keeps harness
+state and common cruft out of the seeded snapshot.
 """
 
 from __future__ import annotations
@@ -14,6 +16,24 @@ from pathlib import Path
 PROJECT_STATE_DIRNAME = "upstream.git"
 LOG_DIRNAME = "agent_logs"
 
+# Top-level names that should NOT be copied into the initial commit.
+# Includes the harness's own state and the usual local-dev clutter.
+SEED_SKIP_TOP_LEVEL = frozenset(
+    [
+        ".git",
+        PROJECT_STATE_DIRNAME,
+        LOG_DIRNAME,
+        ".venv",
+        "venv",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+        "__pycache__",
+        "node_modules",
+        ".DS_Store",
+    ]
+)
+
 
 @dataclass(frozen=True)
 class ProjectLayout:
@@ -22,7 +42,6 @@ class ProjectLayout:
     root: Path
     goal_md: Path
     judge_md: Path | None
-    seed_dir: Path | None
     upstream_repo: Path
     log_dir: Path
 
@@ -55,13 +74,11 @@ def discover(project_dir: Path | str | None = None) -> ProjectLayout:
         )
 
     judge_md = root / "JUDGE.md"
-    seed_dir = root / "seed"
 
     return ProjectLayout(
         root=root,
         goal_md=goal_md,
         judge_md=judge_md if judge_md.is_file() else None,
-        seed_dir=seed_dir if seed_dir.is_dir() else None,
         upstream_repo=root / PROJECT_STATE_DIRNAME,
         log_dir=root / LOG_DIRNAME,
     )

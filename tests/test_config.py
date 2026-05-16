@@ -10,7 +10,6 @@ def test_discover_minimal(project_dir: Path):
     assert layout.root == project_dir.resolve()
     assert layout.goal_md == project_dir / "GOAL.md"
     assert layout.judge_md is None
-    assert layout.seed_dir is None
     assert layout.upstream_repo == project_dir / "upstream.git"
     assert layout.log_dir == project_dir / "agent_logs"
 
@@ -19,13 +18,6 @@ def test_discover_with_judge(project_dir: Path):
     (project_dir / "JUDGE.md").write_text("# judge\n")
     layout = config.discover(project_dir)
     assert layout.judge_md == project_dir / "JUDGE.md"
-
-
-def test_discover_with_seed(project_dir: Path):
-    (project_dir / "seed").mkdir()
-    (project_dir / "seed" / "hello.txt").write_text("hi\n")
-    layout = config.discover(project_dir)
-    assert layout.seed_dir == project_dir / "seed"
 
 
 def test_discover_missing_goal_md(tmp_path: Path):
