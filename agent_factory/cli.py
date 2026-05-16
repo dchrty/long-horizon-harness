@@ -97,6 +97,15 @@ def init(project_dir: Path | None, debug: bool) -> None:
 @click.option("--cpus", default=2.0, show_default=True, type=float)
 @click.option("--no-build", is_flag=True, help="Skip docker build (use the existing image tag).")
 @click.option(
+    "--force",
+    is_flag=True,
+    help=(
+        "If containers for this project are already running, kill them and "
+        "start fresh. Default: refuse to start (so two overlapping runs can't "
+        "SIGTERM each other's agents at timer expiry)."
+    ),
+)
+@click.option(
     "--claude-config",
     "claude_config_dir",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
@@ -112,6 +121,7 @@ def run(
     memory: str,
     cpus: float,
     no_build: bool,
+    force: bool,
     claude_config_dir: Path | None,
     project_dir: Path | None,
     debug: bool,
@@ -144,10 +154,35 @@ def run(
     click.echo(f"  Agents        : {num_agents}")
     click.echo(f"  Duration      : {duration} min")
     click.echo(f"  Model         : {model}")
-    click.echo(f"  Claude config : {claude_config}  (read-only into each agent)")
+    click.echo(f"  Claude config : {claude_config}  (read-write into each agent)")
     if debug:
         click.echo("  Debug         : ON (60s snapshots; subprocesses echoed)")
     click.echo("=" * 56)
+
+    # Refuse to start if another `agent-factory run` is already live
+    # against this project. Two overlapping runs SIGTERM each other's
+    # agents when the first hits its duration timer (its stop_agents
+    # filters by prefix and matches the other run's containers too),
+    # producing silent data loss for the second run mid-iteration.
+    # --force opts back into the old "rm -f and continue" behavior.
+    existing = docker_runner.list_running(layout)
+    if existing and not force:
+        click.echo("")
+        click.echo(
+            click.style(
+                f"Refusing to start: {len(existing)} container(s) for this "
+                f"project are already running:",
+                fg="red",
+            )
+        )
+        for name in existing:
+            click.echo(f"  - {name}")
+        click.echo("")
+        click.echo(
+            "Run `agent-factory stop` to stop them gracefully (agents save "
+            "WIP on SIGTERM), or re-run with --force to kill them and start fresh."
+        )
+        raise click.exceptions.Exit(2)
 
     if not no_build:
         docker_runner.build_image(layout)
@@ -156,6 +191,9 @@ def run(
         click.echo("upstream.git not found; initialising...")
         repo.init_upstream(layout)
 
+    # Clean up any exited / crashed containers from a previous run that
+    # weren't already running (those would have triggered the refuse-
+    # to-start check above).
     docker_runner.remove_existing(layout)
     docker_runner.launch_agents(
         layout,
