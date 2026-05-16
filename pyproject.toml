@@ -1,0 +1,73 @@
+[project]
+name = "agent-factory"
+version = "0.1.0"
+description = "Generalized async agent harness: spawn N parallel Claude Code agents in Docker, coordinating through a shared bare git repo, driving any goal-directed task supplied as GOAL.md."
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+dependencies = [
+    "click>=8.1",
+    "docker>=7.0",
+]
+
+# End-user extras (installed with `pip install agent-factory[plot]` /
+# `uv sync --extra plot`). Reserved for things a downstream user might
+# actually want, not for dev tooling.
+[project.optional-dependencies]
+plot = ["matplotlib>=3.7"]
+
+# PEP 735 dependency groups. uv-native location for dev-only tools.
+# Activate with `uv sync --group dev` (or `--all-groups`).
+[dependency-groups]
+dev = [
+    "pytest>=7.4",
+    "pytest-mock>=3.12",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+agent-factory = "agent_factory.cli:cli"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agent_factory*"]
+
+[tool.setuptools.package-data]
+agent_factory = ["templates/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# --------------------------------------------------------------------------
+# Ruff: lint + format. Replaces flake8 + isort + black.
+# Run:   uv run ruff check --fix .
+#        uv run ruff format .
+# --------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    ".venv",
+    "examples/cobol-relationships/seed",  # sample COBOL files, not Python
+]
+
+[tool.ruff.lint]
+# E/W: pycodestyle, F: pyflakes, I: isort, B: bugbear, UP: pyupgrade,
+# SIM: flake8-simplify, RUF: ruff-specific
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = [
+    "E501",   # line length is enforced by the formatter
+    "B008",   # function calls in argument defaults (click decorators use this)
+    "SIM117", # nested with statements; harness uses them clearly
+]
+
+[tool.ruff.lint.per-file-ignores]
+"test/unit/*.py" = ["B011"]  # assert False is fine in tests
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
