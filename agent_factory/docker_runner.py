@@ -38,7 +38,16 @@ def _docker_available() -> None:
 
 
 def _materialise_template_dir() -> Path:
-    """Copy bundled templates onto disk so `docker build` can see them."""
+    """Copy bundled templates onto disk so `docker build` can see them.
+
+    Uses write_bytes (not write_text) to preserve LF line endings on
+    Windows. Path.write_text() translates \\n -> os.linesep, which on
+    Windows produces CRLF. A shebang line with CRLF makes the Linux
+    kernel look for an interpreter named `/bin/bash\\r` and fail with
+    `exec /entrypoint.sh: no such file or directory` - the worst kind
+    of misleading error message, because the file IS there; the issue
+    is the trailing carriage return on the shebang.
+    """
     tmp = Path(tempfile.mkdtemp(prefix="agent-factory-build-"))
     files = resources.files(TEMPLATES_PACKAGE)
     # Only the in-container entrypoint is baked into the image. judge.sh
@@ -47,7 +56,7 @@ def _materialise_template_dir() -> Path:
     for entry in ("Dockerfile", "entrypoint.sh"):
         src_text = files.joinpath(entry).read_text()
         target = tmp / entry
-        target.write_text(src_text)
+        target.write_bytes(src_text.encode("utf-8"))
         if entry.endswith(".sh"):
             target.chmod(0o755)
     return tmp

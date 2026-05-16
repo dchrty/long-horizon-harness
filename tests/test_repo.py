@@ -57,6 +57,47 @@ def test_init_upstream_seeds_judge_artifacts_when_judge_md_present(project_dir: 
     assert data == {"version": 1, "verdicts": []}
 
 
+def test_init_upstream_seeds_judge_sh_with_lf_line_endings(project_dir: Path):
+    """Agent containers must see LF-terminated judge.sh. A shebang with
+    a trailing CR makes Linux fail with `exec ./judge.sh: no such file
+    or directory` when invoked. Regression test for the same bug class
+    as docker_runner._materialise_template_dir.
+
+    We force `core.autocrlf=false` on the verification clone so the
+    test reflects what agents actually see (containers always have
+    autocrlf=false). Without that override, a Windows host with the
+    default Git-for-Windows config translates LF -> CRLF on checkout,
+    masking what's actually in the upstream objects."""
+    (project_dir / "JUDGE.md").write_text("# judge\n")
+    layout = config.discover(project_dir)
+    repo.init_upstream(layout)
+
+    clone = project_dir / "_check_endings"
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.autocrlf=false",
+            "clone",
+            str(layout.upstream_repo),
+            str(clone),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    judge_sh_bytes = (clone / "judge.sh").read_bytes()
+    assert b"\r\n" not in judge_sh_bytes, (
+        "judge.sh contains CRLF line endings; agents will fail with "
+        "`exec ./judge.sh: no such file or directory` on Linux"
+    )
+    assert b"\r" not in judge_sh_bytes, "judge.sh contains stray CR bytes"
+    # The verdicts.json scaffold is JSON (parsers tolerate CRLF) but we
+    # write all templates uniformly via write_bytes, so it should also
+    # be LF-clean.
+    verdicts_bytes = (clone / "verdicts.json").read_bytes()
+    assert b"\r" not in verdicts_bytes
+
+
 def test_init_upstream_snapshots_project_directory(project_dir: Path):
     """Everything in the project root (minus harness state) is seeded verbatim."""
     (project_dir / "sub").mkdir()

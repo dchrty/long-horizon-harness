@@ -131,16 +131,21 @@ def _seed_files(work: Path, layout: ProjectLayout) -> None:
     tasks_dir.mkdir(exist_ok=True)
     (tasks_dir / ".gitkeep").touch(exist_ok=True)
 
-    # judge.sh + verdicts.json — only if the project opted into judging
+    # judge.sh + verdicts.json — only if the project opted into judging.
+    # Use write_bytes so Windows hosts don't translate \\n -> \\r\\n.
+    # A CRLF-terminated shebang line is unrunnable on Linux: the kernel
+    # interprets `#!/bin/bash\\r` as a request for an interpreter that
+    # doesn't exist, producing the famously misleading
+    # `exec ./judge.sh: no such file or directory` error.
     if layout.judge_md is not None:
         judge_sh = work / "judge.sh"
-        judge_sh.write_text(_read_template("judge.sh"))
+        judge_sh.write_bytes(_read_template("judge.sh").encode("utf-8"))
         judge_sh.chmod(0o755)
         log.info("Seeded judge.sh from template")
 
         verdicts_path = work / "verdicts.json"
         if not verdicts_path.exists():
-            verdicts_path.write_text(_read_template("verdicts.empty.json"))
+            verdicts_path.write_bytes(_read_template("verdicts.empty.json").encode("utf-8"))
             log.info("Seeded verdicts.json scaffold")
 
 

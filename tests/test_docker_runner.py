@@ -183,3 +183,31 @@ def test_build_image_failure_includes_tail_in_error(layout):
     # Last line must be present; very-first line must be trimmed by the deque.
     assert "step 199" in msg
     assert "step 0" not in msg
+
+
+def test_materialise_template_dir_preserves_lf_endings():
+    """On Windows, Path.write_text() translates \\n -> \\r\\n. A shebang
+    with a trailing CR is unrunnable on Linux - the kernel interprets
+    `#!/bin/bash\\r` as a request for an interpreter that does not exist,
+    producing `exec /entrypoint.sh: no such file or directory`. This
+    regression test would have caught that bug pre-fix; it ensures every
+    template the harness materialises uses LF endings regardless of
+    host OS."""
+    import shutil as _shutil
+
+    tmp = docker_runner._materialise_template_dir()
+    try:
+        for filename in ("Dockerfile", "entrypoint.sh"):
+            data = (tmp / filename).read_bytes()
+            assert b"\r\n" not in data, (
+                f"{filename} contains CRLF after materialise; agents will fail with "
+                f"`exec /entrypoint.sh: no such file or directory` on Linux"
+            )
+            assert b"\r" not in data, f"{filename} contains stray CR bytes"
+        # entrypoint.sh must remain executable (chmod 0o755 path).
+        # Skip the mode check on Windows where chmod is a no-op.
+        import os as _os
+        if _os.name == "posix":
+            assert (tmp / "entrypoint.sh").stat().st_mode & 0o111
+    finally:
+        _shutil.rmtree(tmp, ignore_errors=True)
