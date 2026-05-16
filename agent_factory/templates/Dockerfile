@@ -22,11 +22,19 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN useradd -m -s /bin/bash agent \
     && echo "agent ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# Git identity (agents push under this name)
+# Git identity (agents push under this name).
+# `safe.directory *` whitelists every mounted path so git doesn't refuse
+# operations on /upstream when the host's UID doesn't match the container's
+# `agent` user. This bites Windows hosts in particular: the bind-mount
+# preserves a host UID that the container has no mapping for, and git's
+# CVE-2022-24765 check fires with `fatal: detected dubious ownership in
+# repository at '/upstream'`. The container is a single-tenant sandbox
+# (only mounts are ones the harness controls), so global trust is safe.
 RUN git config --system user.name "Claude Opus 4.6" \
     && git config --system user.email "noreply@anthropic.com" \
     && git config --system pull.rebase true \
-    && git config --system rebase.autoStash true
+    && git config --system rebase.autoStash true \
+    && git config --system --add safe.directory '*'
 
 # Workspace owned by agent
 RUN mkdir -p /workspace && chown agent:agent /workspace

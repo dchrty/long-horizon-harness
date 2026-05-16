@@ -77,12 +77,65 @@ def test_launch_agents_builds_correct_docker_run_command(layout, tmp_path):
     assert first[0:2] == ["docker", "run"]
     assert "--name" in first and f"{layout.run_prefix}-1" in first
     assert f"{layout.upstream_repo}:/upstream:rw" in first
-    assert f"{fake_claude}:/home/agent/.claude:ro" in first
+    # /home/agent/.claude is mounted RW so the in-container claude can
+    # write session-env state under it (read-only triggers EROFS).
+    assert f"{fake_claude}:/home/agent/.claude:rw" in first
     # No API key gets passed
     assert not any("ANTHROPIC_API_KEY" in arg for arg in first)
     assert f"AGENT_ID={layout.run_prefix}-1" in first
     assert "AGENT_MODEL=claude-opus-4-6" in first
     assert "--memory" in first and "4g" in first
+
+
+def test_launch_agents_also_mounts_claude_json_if_present(layout, tmp_path):
+    """Newer Claude Code stores auth state in ~/.claude.json (a file
+    sibling to the ~/.claude/ directory). If it exists, launch_agents
+    bind-mounts it at /home/agent/.claude.json so the in-container
+    claude can read it."""
+    captured: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append(cmd)
+        return _ok()
+
+    fake_claude = tmp_path / "host-claude"
+    fake_claude.mkdir()
+    fake_claude_json = tmp_path / "host-claude.json"
+    fake_claude_json.write_text('{"oauthAccount": {}}\n')
+
+    with (
+        patch("agent_factory.docker_runner._docker_available"),
+        patch("agent_factory.docker_runner.subprocess.run", side_effect=fake_run),
+    ):
+        docker_runner.launch_agents(
+            layout, num_agents=1, claude_config_dir=fake_claude
+        )
+    first = captured[0]
+    assert f"{fake_claude_json}:/home/agent/.claude.json:rw" in first
+
+
+def test_launch_agents_skips_claude_json_when_absent(layout, tmp_path):
+    """If ~/.claude.json doesn't exist (older Claude Code installs that
+    keep everything under ~/.claude/), don't add the second -v flag."""
+    captured: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append(cmd)
+        return _ok()
+
+    fake_claude = tmp_path / "host-claude"
+    fake_claude.mkdir()
+    # Deliberately do NOT create the sibling .json file.
+
+    with (
+        patch("agent_factory.docker_runner._docker_available"),
+        patch("agent_factory.docker_runner.subprocess.run", side_effect=fake_run),
+    ):
+        docker_runner.launch_agents(
+            layout, num_agents=1, claude_config_dir=fake_claude
+        )
+    first = captured[0]
+    assert not any("/home/agent/.claude.json" in arg for arg in first)
 
 
 def test_launch_agents_rejects_missing_claude_config(layout, tmp_path):

@@ -153,9 +153,17 @@ def launch_agents(
     """Spawn N detached agent containers. Returns container names.
 
     The in-container `claude` authenticates by reading the host's claude
-    credentials, bind-mounted read-only at /home/agent/.claude. No API
-    key is needed; the host login (Max subscription / OAuth / API key
-    in claude config) is inherited.
+    credentials. Two paths bind-mount in:
+
+      - The config directory (`~/.claude/`) at /home/agent/.claude/
+      - The auth file (`~/.claude.json`), if present, at /home/agent/.claude.json
+
+    Both are mounted **read-write** because current Claude Code versions
+    write session-env state under the config dir at runtime; a read-only
+    mount triggers `EROFS: read-only file system` and the agent's claude
+    session never gets off the ground. The trade-off documented in the
+    README (an agent that goes off-script can read your auth) extends
+    here to "can also modify the auth" — same containment posture.
     """
     _docker_available()
     if not claude_config_dir.is_dir():
@@ -164,6 +172,24 @@ def launch_agents(
             "Run `claude` once on the host to log in first."
         )
     layout.log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Optional sibling auth file: newer Claude Code stores the OAuth/API
+    # state in ~/.claude.json (file), separate from ~/.claude/ (directory).
+    # If it exists, mount it next to the dir so the in-container claude
+    # sees a consistent picture; otherwise skip and let claude proceed
+    # with whatever's in the directory mount.
+    claude_json_file = claude_config_dir.with_suffix(".json")
+    if claude_json_file.is_dir():
+        # Defensive: a directory at this path would shadow the mount in
+        # confusing ways. Skip and warn.
+        log.warning(
+            "Expected file but found directory at %s; skipping the claude.json mount.",
+            claude_json_file,
+        )
+        claude_json_file = None
+    elif not claude_json_file.is_file():
+        claude_json_file = None
+
     names: list[str] = []
     for i in range(1, num_agents + 1):
         name = f"{layout.run_prefix}-{i}"
@@ -180,19 +206,30 @@ def launch_agents(
             "-v",
             f"{layout.log_dir}:/workspace/agent_logs:rw",
             "-v",
-            f"{claude_config_dir}:/home/agent/.claude:ro",
-            "-e",
-            f"AGENT_ID={name}",
-            "-e",
-            f"AGENT_MODEL={model}",
-            "--memory",
-            memory,
-            "--cpus",
-            str(cpus),
-            layout.image_tag,
+            f"{claude_config_dir}:/home/agent/.claude:rw",
         ]
+        if claude_json_file is not None:
+            cmd.extend(["-v", f"{claude_json_file}:/home/agent/.claude.json:rw"])
+        cmd.extend(
+            [
+                "-e",
+                f"AGENT_ID={name}",
+                "-e",
+                f"AGENT_MODEL={model}",
+                "--memory",
+                memory,
+                "--cpus",
+                str(cpus),
+                layout.image_tag,
+            ]
+        )
         log.debug(
-            "docker run (agent %s, image %s, mem %s, cpus %s)", name, layout.image_tag, memory, cpus
+            "docker run (agent %s, image %s, mem %s, cpus %s, claude.json=%s)",
+            name,
+            layout.image_tag,
+            memory,
+            cpus,
+            "yes" if claude_json_file else "no",
         )
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if result.returncode != 0:
