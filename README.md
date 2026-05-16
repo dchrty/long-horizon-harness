@@ -2,31 +2,37 @@
 
 A generalised, async, multi-agent harness for long-running software
 tasks. Spawns N parallel Claude Code agents in Docker containers,
-coordinating through a shared bare git repo. Each run is driven by a
-user-supplied `GOAL.md` — the harness has no opinion about what you're
-building.
+coordinating through a shared git repo.
+
+**Extends and generalises** Anthropic's
+[Building a C Compiler with Claude Agent Teams](https://www.anthropic.com/engineering/building-c-compiler)
+experiment, built on the bash scaffolding at
+[`vizopsai/async_compiler_factory`](https://github.com/vizopsai/async_compiler_factory).
+
+Long-running agent systems traditionally work under constraints that
+require a known-good implementation and a deterministic test suite —
+the C compiler experiment is the canonical example, where every change
+is validated against a passing test suite. But many real tasks have no
+such oracle: parsing messy real-world inputs (COBOL, legacy log
+formats), research synthesis, design proposals, schema extraction. For
+those, you need *agentic judgement* in the loop. This harness supports
+both modes.
 
 Two files drive a run:
 
-- **`GOAL.md`** — what you want the agents to do. The task description,
-  the build/test commands, the coordination protocol — anything an
-  agent needs to know to make progress. You write it; the harness
-  doesn't parse it.
+- **`GOAL.md`** — what you want the agents to do: the task, the
+  build/test commands, the coordination protocol. You write it; the
+  harness doesn't parse it.
 - **`JUDGE.md`** *(optional)* — for tasks with no fixed oracle, the
   criteria a separate `claude` subprocess uses to evaluate each commit
-  before it lands. Pair it with `GOAL.md`: `GOAL.md` tells agents *what
-  to build* and *when to ask for judgement*, `JUDGE.md` tells the judge
-  *what to look for*. Every "fail" verdict is captured in `verdicts.json`
-  so future agents start with their predecessors' lessons in hand.
+  before it lands. `GOAL.md` tells agents *what to build* and *when to
+  ask for judgement*; `JUDGE.md` tells the judge *what to look for*.
+  Every "fail" verdict is captured in `verdicts.json` so future agents
+  start with their predecessors' lessons in hand.
 
 Authentication runs through the **Claude Code CLI** on your host
 (Max / Pro / OAuth) — no `ANTHROPIC_API_KEY` required. API-key auth may
 return as an option in a future version.
-
-Inspired by Anthropic's
-[Building a C Compiler with Claude Agent Teams](https://www.anthropic.com/engineering/building-c-compiler)
-and the bash scaffolding at
-[`vizopsai/async_compiler_factory`](https://github.com/vizopsai/async_compiler_factory).
 
 ## Prerequisites
 
@@ -92,9 +98,6 @@ To upgrade later: `cd long-horizon-harness && git pull && uv tool install . --re
 
 ## Building & contributing
 
-You want to change the harness itself (the `agent_factory/` package, the
-templates, the docs).
-
 ```bash
 git clone https://github.com/dchrty/long-horizon-harness.git
 cd long-horizon-harness
@@ -121,37 +124,7 @@ regenerate `uv.lock`. Use `uv lock --upgrade` to bump every dep to its
 latest matching version. Commit `uv.lock` so everyone resolves the same
 versions.
 
-## The contract
-
-Your project directory is the shared repo. On `init`, the harness
-snapshots everything in it (excluding harness state and common dev
-clutter — `.git`, `upstream.git`, `agent_logs`, `.venv`, `__pycache__`,
-`node_modules`, `.ruff_cache`, `.pytest_cache`, `.mypy_cache`, `.DS_Store`)
-into the initial commit of `upstream.git`.
-
-The harness expects exactly one file: `GOAL.md`. If you also include
-`JUDGE.md`, the harness drops in a `judge.sh` (the fresh-claude judge
-script) and an empty `verdicts.json` alongside your files. It does not
-parse or template either markdown file — what you write is what agents
-read.
-
-## CLI verbs
-
-- `agent-factory init` — create `upstream.git` and seed it.
-- `agent-factory run` — build image (unless `--no-build`), launch agents,
-  monitor every 5 minutes, then stop with SIGTERM (graceful save).
-- `agent-factory status [--short]` — running agents, repo state,
-  file-count breakdown by extension, active task locks, live agent work.
-- `agent-factory analytics [--csv path] [--plot path]` — walk every
-  commit, emit a CSV table of files/lines over time. PNG plot requires
-  the `[plot]` extra.
-- `agent-factory stop` — SIGTERM all agents for this project (each
-  agent traps and pushes uncommitted work before exiting).
-
-All verbs accept `--project DIR` (defaults to cwd) and `-v` for debug
-logging.
-
-## Judgement gating (optional)
+## More on judgement gating
 
 Use this when your task is non-deterministic: there is no known-good
 output, no fixed oracle, no diff-against-expected to assert correctness.
@@ -205,16 +178,3 @@ Try the sieve example:
 uv run agent-factory init       --project examples/sieve
 uv run agent-factory run 2 30   --project examples/sieve
 ```
-
-## Notes / design
-
-- Each agent runs in its own container with
-  `claude --dangerously-skip-permissions`. The Docker sandbox is the
-  reason this is safe.
-- Agents push frequently. The host's `upstream.git` is the only durable
-  artifact. Delete it to start a run fresh; keep it to resume.
-- SIGTERM (`docker stop`) is graceful: the in-container trap commits and
-  pushes uncommitted work before exiting. The host gives 30 seconds for
-  this to complete.
-- The harness has no opinion on testing, building, or task structure.
-  That all lives in `GOAL.md`.

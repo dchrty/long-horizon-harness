@@ -8,7 +8,7 @@ the module layout and process model, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 A general-purpose async harness for long-horizon, goal-directed software
 tasks. Spawns N parallel Claude Code agents in Docker containers,
-coordinating through a shared bare git repo (`upstream.git`). Each run
+coordinating through a shared git repo (`upstream.git`). Each run
 is driven by a user-supplied `GOAL.md`; the harness itself has no
 opinion about what's being built.
 
