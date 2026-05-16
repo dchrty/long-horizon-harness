@@ -5,6 +5,8 @@ Verbs:
   run          build image (if needed), launch agents, monitor, stop.
   status       snapshot of agents + repo state.
   logs         tail (or follow) container output for this project's agents.
+  judges       table view of judge.sh invocations (the visibility layer
+               over nested judge subprocesses).
   analytics    walk the commit log and emit CSV / optional PNG.
   stop         SIGTERM all running agents (graceful save).
 """
@@ -17,7 +19,7 @@ from pathlib import Path
 
 import click
 
-from agent_factory import analytics, config, docker_runner, logs, repo
+from agent_factory import analytics, config, docker_runner, judges, logs, repo
 from agent_factory import status as status_mod
 
 
@@ -280,6 +282,83 @@ def logs_cmd(
     layout = config.discover(project_dir)
     logs.show(
         layout, follow=follow, tail=tail_lines, agent_filter=agent_filter, wait=wait
+    )
+
+
+# ---------------------------------------------------------------------------
+# judges
+# ---------------------------------------------------------------------------
+
+
+@cli.command("judges")
+@click.option("-f", "--follow", is_flag=True, help="Tail new judge invocations as they land.")
+@click.option(
+    "--tail",
+    "tail_n",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Show the last N invocations (0 = all).",
+)
+@click.option(
+    "--agent",
+    "agent_filter",
+    default=None,
+    help="Filter to one agent (full container name).",
+)
+@click.option(
+    "--verdict",
+    "verdict_filter",
+    type=click.Choice(["pass", "fail", "infra-error"], case_sensitive=False),
+    default=None,
+    help="Show only invocations with this verdict.",
+)
+@click.option(
+    "--show",
+    "show_hash",
+    default=None,
+    metavar="HASH",
+    help="Dump the full claude-judge transcript for one short hash (prefix match).",
+)
+@_project_option
+@_debug_option
+def judges_cmd(
+    follow: bool,
+    tail_n: int,
+    agent_filter: str | None,
+    verdict_filter: str | None,
+    show_hash: str | None,
+    project_dir: Path | None,
+    debug: bool,
+) -> None:
+    """Tabular view of `./judge.sh` invocations.
+
+    \b
+    agent-factory judges                       # last 20 invocations
+    agent-factory judges -f                    # tail live as judges run
+    agent-factory judges --agent <full-name>   # one agent's judges
+    agent-factory judges --verdict fail        # only failed verdicts
+    agent-factory judges --show abc1234        # dump full judge transcript
+
+    Reads `agent_logs/judge_history.jsonl` (written by judge.sh per
+    invocation). Each row: ts, agent, short git hash, model, verdict,
+    exit code, duration. Verdict is colour-coded. Use --show with a
+    hash prefix to dump the full claude-judge transcript that was
+    tee'd to `agent_logs/<agent>_judge_<short>_<ts>.log`.
+
+    The point: judge runs are nested subprocesses (claude inside
+    bash inside the agent's claude inside a container) and their
+    output isn't on `agent-factory logs`. This command surfaces them.
+    """
+    _setup_logging(debug)
+    layout = config.discover(project_dir)
+    judges.show(
+        layout,
+        follow=follow,
+        tail=tail_n,
+        agent=agent_filter,
+        verdict=verdict_filter.lower() if verdict_filter else None,
+        show_hash=show_hash,
     )
 
 
