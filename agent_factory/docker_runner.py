@@ -12,6 +12,7 @@ import logging
 import shutil
 import subprocess
 import tempfile
+from collections import deque
 from importlib import resources
 from pathlib import Path
 
@@ -30,6 +31,7 @@ class DockerError(RuntimeError):
 def _docker_available() -> None:
     if shutil.which("docker") is None:
         raise DockerError("docker CLI not found. Install Docker Desktop.")
+    log.debug("docker info  (probe: is daemon running?)")
     result = subprocess.run(["docker", "info"], capture_output=True, text=True)
     if result.returncode != 0:
         raise DockerError("Docker daemon not running. Start Docker Desktop.")
@@ -51,19 +53,51 @@ def _materialise_template_dir() -> Path:
     return tmp
 
 
+# How many trailing build-output lines to keep buffered for error reporting.
+# We can't capture the whole stream (a cold first build is ~3000 lines and
+# bloats DockerError messages); a fixed tail is enough to diagnose the
+# failure step in 95% of cases.
+_BUILD_ERROR_TAIL_LINES = 80
+
+
 def build_image(layout: ProjectLayout) -> str:
-    """Build the agent image for this project. Returns image tag."""
+    """Build the agent image for this project. Returns image tag.
+
+    Streams `docker build` output to stdout in real time. A cold first
+    build on Windows can take 5-10 min (apt + Node + npm install of
+    claude-code); a silent terminal during that window is the harness's
+    worst UX trap. On failure, raises DockerError with the last 80
+    lines of output so the cause is recoverable without re-running.
+    """
     _docker_available()
     build_ctx = _materialise_template_dir()
     try:
         log.info("Building image %s ...", layout.image_tag)
-        result = subprocess.run(
+        log.debug("docker build -t %s %s", layout.image_tag, build_ctx)
+        # Popen + line-iteration so we stream output while still keeping
+        # a tail buffer for error messages. capture_output=True would
+        # leave the user staring at a blank terminal until exit.
+        tail: deque[str] = deque(maxlen=_BUILD_ERROR_TAIL_LINES)
+        proc = subprocess.Popen(
             ["docker", "build", "-t", layout.image_tag, str(build_ctx)],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
+            bufsize=1,  # line-buffered
         )
-        if result.returncode != 0:
-            raise DockerError(f"docker build failed:\n{result.stdout}\n{result.stderr}")
+        assert proc.stdout is not None
+        try:
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                tail.append(line)
+                print(line, flush=True)
+        finally:
+            proc.wait()
+        if proc.returncode != 0:
+            raise DockerError(
+                f"docker build failed (exit {proc.returncode}).\n"
+                f"Last {len(tail)} lines:\n" + "\n".join(tail)
+            )
         log.info("Image built: %s", layout.image_tag)
         return layout.image_tag
     finally:
@@ -72,6 +106,7 @@ def build_image(layout: ProjectLayout) -> str:
 
 def _run_docker(args: list[str]) -> subprocess.CompletedProcess[str] | None:
     """Run a docker subcommand. Returns None if the docker binary is missing."""
+    log.debug("docker %s", " ".join(args))
     try:
         return subprocess.run(
             ["docker", *args],
@@ -147,6 +182,9 @@ def launch_agents(
             str(cpus),
             layout.image_tag,
         ]
+        log.debug(
+            "docker run (agent %s, image %s, mem %s, cpus %s)", name, layout.image_tag, memory, cpus
+        )
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             raise DockerError(f"Failed to start {name}:\n{result.stdout}\n{result.stderr}")
@@ -162,6 +200,7 @@ def stop_agents(layout: ProjectLayout, grace_seconds: int = 30) -> None:
     if not names:
         return
     log.info("Stopping %d agents (grace %ds for SIGTERM save)...", len(names), grace_seconds)
+    log.debug("docker stop -t %d %s", grace_seconds, " ".join(names))
     subprocess.run(
         ["docker", "stop", "-t", str(grace_seconds), *names],
         capture_output=True,

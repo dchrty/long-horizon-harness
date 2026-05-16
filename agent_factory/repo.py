@@ -65,6 +65,7 @@ def init_upstream(layout: ProjectLayout) -> None:
 
     log.info("Creating bare upstream repo at %s", layout.upstream_repo)
     layout.upstream_repo.parent.mkdir(parents=True, exist_ok=True)
+    log.debug("git init --bare --initial-branch=main %s", layout.upstream_repo)
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(layout.upstream_repo)],
         check=True,
@@ -74,6 +75,7 @@ def init_upstream(layout: ProjectLayout) -> None:
 
     with tempfile.TemporaryDirectory(prefix="agent-factory-seed-") as tmp:
         work = Path(tmp) / "seed"
+        log.debug("git clone %s %s", layout.upstream_repo, work)
         subprocess.run(
             ["git", "clone", str(layout.upstream_repo), str(work)],
             check=True,
@@ -144,6 +146,7 @@ def _seed_files(work: Path, layout: ProjectLayout) -> None:
 
 def clone_snapshot(layout: ProjectLayout, dest: Path) -> None:
     """Make a fresh clone of upstream into dest. Used by status/analytics."""
+    log.debug("git clone (snapshot) %s -> %s", layout.upstream_repo, dest)
     subprocess.run(
         ["git", "clone", str(layout.upstream_repo), str(dest)],
         check=True,

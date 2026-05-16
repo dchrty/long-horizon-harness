@@ -121,3 +121,65 @@ def test_stop_agents_sends_sigterm_with_grace(layout):
             docker_runner.stop_agents(layout, grace_seconds=30)
     assert captured[0][0:4] == ["docker", "stop", "-t", "30"]
     assert f"{layout.run_prefix}-1" in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# build_image streams output
+# ---------------------------------------------------------------------------
+
+
+class _FakePopen:
+    """Minimal subprocess.Popen stand-in for build_image streaming tests."""
+
+    def __init__(self, lines: list[str], returncode: int = 0):
+        # io.StringIO supports iteration line-by-line, which is what build_image uses.
+        import io
+
+        self.stdout = io.StringIO("\n".join(lines) + ("\n" if lines else ""))
+        self.returncode = returncode
+
+    def wait(self):
+        return self.returncode
+
+
+def test_build_image_streams_output_to_stdout(layout, capsys):
+    """Lines from `docker build` should print to stdout as they arrive,
+    not be swallowed by capture_output."""
+    fake = _FakePopen(["#1 [internal] load build def", "#2 DONE 0.5s", "Image built."])
+    with (
+        patch("agent_factory.docker_runner._docker_available"),
+        patch("agent_factory.docker_runner._materialise_template_dir", return_value=Path("/tmp/x")),
+        patch("agent_factory.docker_runner.shutil.rmtree"),
+        patch("agent_factory.docker_runner.subprocess.Popen", return_value=fake) as popen_mock,
+    ):
+        tag = docker_runner.build_image(layout)
+
+    assert tag == layout.image_tag
+    out = capsys.readouterr().out
+    assert "#1 [internal] load build def" in out
+    assert "#2 DONE 0.5s" in out
+    assert "Image built." in out
+    # Verify Popen was used (not subprocess.run) and stderr was merged into stdout.
+    args, kwargs = popen_mock.call_args
+    assert args[0][:3] == ["docker", "build", "-t"]
+    assert kwargs["stderr"] is docker_runner.subprocess.STDOUT
+
+
+def test_build_image_failure_includes_tail_in_error(layout):
+    """On non-zero exit, DockerError should carry the last N lines so
+    the caller can diagnose without rerunning the build."""
+    lines = [f"step {i}" for i in range(200)]  # > _BUILD_ERROR_TAIL_LINES
+    fake = _FakePopen(lines, returncode=1)
+    with (
+        patch("agent_factory.docker_runner._docker_available"),
+        patch("agent_factory.docker_runner._materialise_template_dir", return_value=Path("/tmp/x")),
+        patch("agent_factory.docker_runner.shutil.rmtree"),
+        patch("agent_factory.docker_runner.subprocess.Popen", return_value=fake),
+    ):
+        with pytest.raises(docker_runner.DockerError) as excinfo:
+            docker_runner.build_image(layout)
+    msg = str(excinfo.value)
+    assert "exit 1" in msg
+    # Last line must be present; very-first line must be trimmed by the deque.
+    assert "step 199" in msg
+    assert "step 0" not in msg

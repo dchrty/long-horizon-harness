@@ -38,13 +38,29 @@ class StatusSnapshot:
     total_lines: int = 0
     task_locks: list[tuple[str, str]] = field(default_factory=list)
     live_work: dict[str, list[str]] = field(default_factory=dict)
+    # Populated only when snapshot(include_log_tails=True): last N lines
+    # of docker logs per agent. Empty dict otherwise.
+    agent_log_tails: dict[str, list[str]] = field(default_factory=dict)
 
 
-def snapshot(layout: ProjectLayout, short: bool = False) -> StatusSnapshot:
+# How many lines to grab per agent when log tails are requested. Tuned
+# so the debug status block stays scannable for a handful of agents.
+_LOG_TAIL_LINES = 10
+
+
+def snapshot(
+    layout: ProjectLayout,
+    short: bool = False,
+    include_log_tails: bool = False,
+) -> StatusSnapshot:
     snap = StatusSnapshot()
     snap.agents = container_status(layout)
 
     if not layout.upstream_repo.exists():
+        # No repo state to gather, but log tails are independent of repo
+        # state — still capture them if asked.
+        if include_log_tails:
+            snap.agent_log_tails = _collect_log_tails(snap.agents, _LOG_TAIL_LINES)
         return snap
 
     with tempfile.TemporaryDirectory(prefix="agent-factory-status-") as tmp:
@@ -61,13 +77,39 @@ def snapshot(layout: ProjectLayout, short: bool = False) -> StatusSnapshot:
 
         snap.extensions, snap.total_files, snap.total_lines = _walk_tree(work)
 
-        if short:
+        if short and not include_log_tails:
+            # short=True suppresses the deep collectors below, but log
+            # tails are cheap and the caller explicitly asked for them.
             return snap
 
-        snap.task_locks = _read_task_locks(work)
+        if not short:
+            snap.task_locks = _read_task_locks(work)
 
-    snap.live_work = _collect_live_work(snap.agents)
+    if not short:
+        snap.live_work = _collect_live_work(snap.agents)
+    if include_log_tails:
+        snap.agent_log_tails = _collect_log_tails(snap.agents, _LOG_TAIL_LINES)
     return snap
+
+
+def _collect_log_tails(agents: list[dict[str, str]], lines: int) -> dict[str, list[str]]:
+    """Run `docker logs --tail N` for each agent. Best-effort: missing
+    or transiently-failing containers map to an empty list."""
+    out: dict[str, list[str]] = {}
+    for agent in agents:
+        name = agent["name"]
+        log.debug("docker logs --tail %d %s", lines, name)
+        result = subprocess.run(
+            ["docker", "logs", "--tail", str(lines), name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # docker logs writes container-stdout to its stdout and
+        # container-stderr to its stderr; merge so we don't lose either.
+        combined = (result.stdout or "") + (result.stderr or "")
+        out[name] = [ln for ln in combined.splitlines() if ln.strip()]
+    return out
 
 
 def _git_text(cwd: Path, *args: str) -> str:
@@ -150,6 +192,9 @@ def render(snap: StatusSnapshot, short: bool = False) -> str:
     lines.append("")
 
     if short:
+        # If the caller collected log tails alongside a short snapshot,
+        # surface them anyway — they're the whole point of asking for tails.
+        _append_log_tails(lines, snap)
         return "\n".join(lines)
 
     lines.append("--- Recent Commits ---")
@@ -181,4 +226,21 @@ def render(snap: StatusSnapshot, short: bool = False) -> str:
                 lines.append("    (clean working tree)")
         lines.append("")
 
+    _append_log_tails(lines, snap)
+
     return "\n".join(lines)
+
+
+def _append_log_tails(out: list[str], snap: StatusSnapshot) -> None:
+    """Render per-agent container log tails if the snapshot collected any."""
+    if not snap.agent_log_tails:
+        return
+    out.append(f"--- Recent Agent Output (last {_LOG_TAIL_LINES} lines each) ---")
+    for agent, tail in snap.agent_log_tails.items():
+        out.append(f"  {agent}:")
+        if tail:
+            for line in tail:
+                out.append(f"    {line}")
+        else:
+            out.append("    (no output captured)")
+    out.append("")
