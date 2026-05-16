@@ -1,0 +1,9 @@
+# Paths whose changes require a passing judge verdict before the
+# pre-receive hook accepts a push. One shell-glob pattern per line.
+# `#` comments and blank lines are ignored.
+#
+# This example expects agents to build the parsing layer under
+# `src/cobol_rels/`. Edit when you add new domain code the judge
+# should evaluate.
+
+src/cobol_rels/*.py

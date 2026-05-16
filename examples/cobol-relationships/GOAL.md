@@ -112,83 +112,63 @@ Check these in priority order:
 
 Avoid duplicating another agent's work. Check `current_tasks/` first.
 
-## Judgement gating with `./judge.sh`
+## Judgement gating (handled by the harness)
 
 This project's correctness is hard to assert with a fixed oracle — the
-example corpus only covers a slice of valid COBOL. Before pushing a
-commit to `main` that introduces or changes parsing logic, you MUST
-have it judged. The judge is a *fresh* `claude` subprocess that reads
-`JUDGE.md` and your change with no context from you.
+example corpus only covers a slice of valid COBOL. Pattern / extractor
+changes are gated by a fresh `claude` subprocess that reads `JUDGE.md`
+with no context from you.
 
-### When to invoke
+**You do not invoke the judge.** The harness installs a `pre-receive`
+hook in `upstream.git/hooks/` at `agent-factory init` time. The hook
+runs on every `git push` and gates any commit whose changes touch a
+path listed in `.judge-gates` at the repo root. The commit message is
+the judge's input — write a good one and the judge has what it needs.
 
-Invoke `./judge.sh` after any commit that:
+The gated paths for this project are listed in `.judge-gates`. Edit
+that file (and commit the edit) if you add a new domain layer the
+judge should evaluate.
 
-- Adds new parsing logic (regex, lexer, statement detection).
-- Changes how a relationship is extracted (`CALL`, `COPY`, `INCLUDE`, …).
-- Touches handling of dialect-specific syntax.
+### What a good commit message looks like
 
-You do **not** need to invoke the judge for pure refactors, doc-only
-changes, or test-suite-only additions.
+The judge reads your commit message verbatim as the summary. Write it
+like you'd write a code-review note: state intent, cite the spec,
+report what tests cover the change, mention any risk you're uncertain
+about. A terse "fix call extraction" gets the judge nothing to weigh
+against; a well-written message gets the benefit of the doubt.
 
-### How to invoke
+```
+Add EXEC SQL INCLUDE support (closes exec-sql-include)
 
-1. Commit your change normally. Note the commit hash.
-2. Write a short summary at `/tmp/agent_summary_<short_hash>.md`:
-   - **Intent**: what you were trying to do.
-   - **What you changed**: which files / functions.
-   - **How you tested**: what runs you did against the corpus.
-   - **Why you think this is right**: spec citations, dialect reasoning.
-   - **Risk you're uncertain about**: assumptions you didn't fully
-     verify.
-3. Identify repo paths the judge should look at. Typically include the
-   files you changed and `corpus/sample_cobol/` so the judge can
-   inspect for overfitting.
-4. Invoke (the judge.sh is at the repo root, seeded by the harness):
+Recognises COPYBOOK references inside EXEC SQL INCLUDE statements
+as a copy edge, not a call edge.
 
-   ```bash
-   HASH=$(git rev-parse HEAD)
-   SHORT=$(git rev-parse --short HEAD)
+Spec: IBM DB2 Application Programming and SQL Guide §10.4
+   (EXEC SQL INCLUDE syntax).
 
-   JUDGE_GIT_HASH="$HASH" \
-   JUDGE_INPUT_FILE="/tmp/agent_summary_${SHORT}.md" \
-   JUDGE_OUTPUT_FILE="/tmp/verdict_${SHORT}.json" \
-   JUDGE_CONTEXT=$'corpus/sample_cobol/\nsrc/cobol_rels/<file_you_changed>.py' \
-     ./judge.sh
-   ```
+Tests: 14 -> 16 passing (added test_exec_sql_include_basic and
+   test_exec_sql_include_with_dclgen).
 
-5. Read the verdict file. If `verdict == "pass"`, push to `main`. If
-   `fail`, follow the recovery flow below.
+Risk: assumes INCLUDE is always a copybook reference, not a literal
+   SQL include — IBM dialect specific, may not hold on Micro Focus.
+```
 
-### On a `fail` verdict
+### When your push is rejected
 
-The judge has flagged your change. Do **not** push it to `main`.
-Instead:
+If the judge returns `fail`, the pre-receive hook rejects the push.
+You'll see a rejection message with the rationale. Three options:
 
-1. Open `verdicts.json` at the repo root. Find the max existing
-   `v-NNNN` id and pick the next one (or use
-   `agent_factory.verdicts.next_id` if available).
-2. Append a new entry:
-   - `id`, `timestamp` (ISO 8601, UTC, `Z`-suffixed)
-   - `agent_id` (your `$AGENT_ID` env var)
-   - `git_hash`, `git_hash_parent`
-   - `intent` (from your own summary)
-   - `what_went_wrong` (your honest read of why the judge failed it)
-   - `judge_rationale` (copied from the verdict JSON `rationale`)
-   - `lesson` (one sentence; what to tell the next agent)
-   - `tags` (short kebab-case labels)
-3. Push the failing commit to a preservation ref instead of `main`:
+1. **Amend the commit** with the spec citation, missing test, or
+   tightened logic the judge flagged, then push again.
+2. **Roll back** (`git reset --hard HEAD~1`) if the approach was
+   wrong and start over with a different design.
+3. **Record the lesson** by appending an entry to `verdicts.json`
+   before retrying — useful when the failure mode is one a future
+   agent might repeat.
 
-   ```bash
-   git push origin "$HASH":refs/bad-attempts/v-NNNN-<short-slug>
-   ```
-
-4. `git reset --hard HEAD^`, commit the updated `verdicts.json`, push,
-   and start a new attempt with the lesson in hand.
-
-If the judge fails with exit code 2 (infra error), the verdict file
-isn't written — re-run; if it keeps failing, file an idea in
-`current_tasks/judge_infra_<date>.txt` and pick a different task.
+The hook also accepts pushes that don't touch any path in
+`.judge-gates`. Pure refactors, test-only commits, and doc-only
+changes are not gated.
 
 ## Testing
 
